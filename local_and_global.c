@@ -12,13 +12,19 @@ bool is_store_in_between_shared_memory_uses(LLVMValueRef first_instruction, LLVM
 std::unordered_set <LLVMValueRef> compute_gen_set_for_block(LLVMBasicBlockRef bb);
 std::unordered_set <LLVMValueRef> set_of_all_store (LLVMValueRef func);
 std::unordered_set <LLVMValueRef> compute_kill_set_for_block(LLVMBasicBlockRef bb);
+std::unordered_map <LLVMBasicBlockRef, std::unordered_set <LLVMBasicBlockRef>> compute_predecesor_blocks (LLVMValueRef func);
+bool taking_load_into_consideration(LLVMValueRef func);
+bool instruction_should_be_kept(LLVMValueRef instruction);
+void constant_propagation_and_constant_folding(LLVMValueRef func);
+std::unordered_map <LLVMBasicBlockRef, struct IN_and_OUT> in_and_out_sets_map(LLVMValueRef func);
+
 struct IN_and_OUT {
     std::unordered_set <LLVMValueRef> in_set;
     std::unordered_set <LLVMValueRef> out_set;
-} IN_and_OUT;
+};
 
 int main(){
-
+    
 }
 // functions created for local tasks of optimization
 
@@ -211,9 +217,11 @@ std::unordered_set <LLVMValueRef> set_of_all_store (LLVMValueRef func) {
             }
         }
     }
+    return set_of_all_store;
 }
 
 // computing the set KILL[B] for a basic block B
+// for each store instruction in the basic block to a pointer, the kill set is the set of all other store instructions to the same pointer in the entire program
 std::unordered_set <LLVMValueRef> compute_kill_set_for_block(LLVMBasicBlockRef bb) {
 
     std::unordered_set <LLVMValueRef> block_kill_set = {};
@@ -225,12 +233,13 @@ std::unordered_set <LLVMValueRef> compute_kill_set_for_block(LLVMBasicBlockRef b
     for (LLVMValueRef ins = LLVMGetFirstInstruction(bb); ins != NULL; ins = LLVMGetNextInstruction(ins)){
         if (LLVMGetInstructionOpcode(ins) == LLVMStore){
             for (LLVMValueRef store_ins : set_of_stores) {
-                if (store_ins != ins) { // so that all the others are added
+                if ((LLVMGetOperand(ins, 1) == LLVMGetOperand(store_ins, 1)) && (ins != store_ins) ) { // so that all the others are added
                     block_kill_set.insert(store_ins);
                 }
             }
         }
     }
+    return block_kill_set;
 }
 
 // Getting the predecessors map where the keys are the blocks and the values are their corresponding predecessors
@@ -252,56 +261,179 @@ std::unordered_map <LLVMBasicBlockRef, std::unordered_set <LLVMBasicBlockRef>> c
     return predecessors_map;
 }
 
-std::unordered_map <LLVMBasicBlockRef, IN_and_OUT> in_and_out_sets_map(LLVMvalueRef func) {
+std::unordered_map <LLVMBasicBlockRef, struct IN_and_OUT> in_and_out_sets_map(LLVMValueRef func) {
     // we begin by computing the predecessors for each block for easier later computation
     std::unordered_map <LLVMBasicBlockRef, std::unordered_set <LLVMBasicBlockRef>> predecessors_map = compute_predecesor_blocks(func);
     // initializing each "in set" as empty and also initializing each "out set" as the gen set
-    std::unordered_map <LLVMBasicBlockRef, IN_and_OUT> in_and_out_sets_map;
+    std::unordered_map <LLVMBasicBlockRef, struct IN_and_OUT> in_and_out_sets_map;
+
     for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(func);
         bb != NULL;
         bb = LLVMGetNextBasicBlock(bb)) {
             std::unordered_set <LLVMValueRef> in_set = {};
             std::unordered_set <LLVMValueRef> out_set = compute_gen_set_for_block(bb); 
 
-            IN_and_OUT IN_and_OUT_element;
+            struct IN_and_OUT IN_and_OUT_element;
             // we provide the in_set and out_set data to the IN_and_OUT_element
-            IN_and_OUT_element.in_set_in_block = in_set;
-            IN_and_OUT_element.out_set_in_block = out_set;
+            IN_and_OUT_element.in_set = in_set;
+            IN_and_OUT_element.out_set = out_set;
 
             in_and_out_sets_map[bb] = IN_and_OUT_element;
         } 
 
     bool change = true; // in order to stop when we have reached a fixed point
+
     while (change) {
         change = false; // if a change is found this will change to true again
-        for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(func);
-            bb != NULL;
-            bb = LLVMGetNextBasicBlock(bb)) {
+        for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(func); bb != NULL;  bb = LLVMGetNextBasicBlock(bb)) {
+
+                // GEN and KILL set for block to do OUT[B] = GEN[B] union (in[B] - kill[B])
+                std::unordered_set <LLVMValueRef> gen_set_of_block = compute_gen_set_for_block(bb);
+                std::unordered_set <LLVMValueRef> kill_set_of_block = compute_kill_set_for_block(bb);
+
                 std::unordered_set <LLVMBasicBlockRef> predecessors_of_bb = predecessors_map[bb];
+
+                // Storing the latest OUT and IN of the block to compare with the new one and see if change has ocurred
+                std::unordered_set <LLVMValueRef> latest_in_set_for_bb = in_and_out_sets_map[bb].in_set;
+                std::unordered_set <LLVMValueRef> latest_out_set_for_bb = in_and_out_sets_map[bb].out_set;
+
+                // We consider the new sets that will be constructed and keep the latest as above for comparison purposes (the new ones have to be cleared to be filled per each cycle)
+                std::unordered_set <LLVMValueRef> new_in_set_for_bb = {};
+                std::unordered_set <LLVMValueRef> new_out_set_for_bb = {};
+
                 // computing and storing IN[B] as the union of the predecessors OUT
                 for (LLVMBasicBlockRef predecessor : predecessors_of_bb) {
-                    in_and_out_sets_map[bb].in_set_in_block.insert(in_and_out_sets_map[predecessor].out_set_in_block.begin(), in_and_out_sets_map[predecessor].out_set_in_block.end());
+                    new_in_set_for_bb.insert(in_and_out_sets_map[predecessor].out_set.begin(), in_and_out_sets_map[predecessor].out_set.end());
                 }
-                // Storing the old OUT of the block to compare with the new one and see if change has ocurred
-                std::unordered_set <LLVMValueRef> old_out = in_and_out_sets_map[bb].out_set_in_block;
-                // we compute the gen set of the block to do OUT[B] = GEN[B] union (in[B] - kill[B])
-                std::unordered_set <LLVMValueRef> gen_set_of_block = compute_gen_set_for_block(bb);
+
                 // first we include all the gen set elements associated
-                in_and_out_sets_map[bb].out_set_in_block.insert(gen_set_of_block.begin(), gen_set_of_block.end());
+                new_out_set_for_bb.insert(gen_set_of_block.begin(), gen_set_of_block.end());
+
                 // inserting IN[B] - KILL[B] to finish defining OUT[B]
-                std::unordered_set <LLVMValueRef> in_instructions = in_and_out_sets_map[bb].in_set_in_block;
-                for (LLVMValueRef IN_instruction : in_instructions) {
-                    std::unordered_set <LLVMValueRef> kill_instructions_for_block = compute_kill_set_for_block(bb);
-                    for (LLVMValueRef KILL_instruction : kill_instructions_for_block) {
-                        if (IN_instruction != KILL_instruction) {
-                            in_and_out_sets_map[bb].out_set_in_block.insert(IN_instruction);
-                        }
+                for (LLVMValueRef IN_instruction : new_in_set_for_bb) {
+                    if (kill_set_of_block.find(IN_instruction) == kill_set_of_block.end()) {// if IN_instruction is not found then it returns kill.end() so we add it (set difference) 
+                            new_out_set_for_bb.insert(IN_instruction);
                     }
                 }
+
                 // checking if a change has occured
-                if (in_and_out_sets_map[bb].out_set_in_block != old_out) {
+
+                if ((latest_in_set_for_bb != new_in_set_for_bb) || (latest_out_set_for_bb != new_out_set_for_bb)) {
                     change = true;
+                    in_and_out_sets_map[bb].in_set = new_in_set_for_bb;
+                    in_and_out_sets_map[bb].out_set = new_out_set_for_bb;
                 }
             }
     }
+    return in_and_out_sets_map;
+}
+
+bool taking_load_into_consideration(LLVMValueRef func){
+    std::unordered_map <LLVMBasicBlockRef, struct IN_and_OUT> in_set_and_out_set_map = in_and_out_sets_map(func);
+    bool change_has_ocurred = false; // if we perform constant propagation and effectively certain load instructions are liminated then we notify to the caller that a change has happened
+    
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(func); bb != NULL; bb = LLVMGetNextBasicBlock(bb)) {
+        
+        std::unordered_set <LLVMValueRef> R = in_set_and_out_set_map[bb].in_set;
+        // filled in the loop for instructions
+        std::unordered_set <LLVMValueRef> marked_load_instructions_to_delete = {};
+        
+        for (LLVMValueRef ins = LLVMGetFirstInstruction(bb); ins != NULL; ins = LLVMGetNextInstruction(ins)) {
+
+            if (LLVMGetInstructionOpcode(ins) == LLVMStore){
+
+                R.insert(ins);
+
+                // variable created just for the purpose of identifying which instruction to erase
+                std::unordered_set <LLVMValueRef> to_erase = {};
+
+                for (LLVMValueRef ins_in_R : R) {
+                    
+                    bool refers_to_the_same_ptr = (LLVMGetOperand(ins, 1) == LLVMGetOperand(ins_in_R, 1));
+                    bool is_different_from_ins = (ins != ins_in_R);
+                    
+                    if (refers_to_the_same_ptr && is_different_from_ins) {
+                        to_erase.insert(ins_in_R);
+                    }
+                }
+
+                // we now delete the killed instructions from R
+                for (LLVMValueRef ins_to_erase_from_R : to_erase) {
+                    R.erase(ins_to_erase_from_R); 
+                }
+            }
+
+            if (LLVMGetInstructionOpcode(ins) == LLVMLoad) {
+                LLVMValueRef ptr = LLVMGetOperand(ins, 0);
+
+                // finding all store instructions in R that write to the ptr
+                std::unordered_set <LLVMValueRef> ins_in_R_to_ptr = {};
+
+                for (LLVMValueRef ins_in_R : R) {
+                    if (LLVMGetOperand(ins_in_R, 1) == ptr) {
+                        ins_in_R_to_ptr.insert(ins_in_R);
+                    }
+                }
+
+                // checking if all of the instructions in R to ptr are the same constant and if they are constant store instructions
+
+                bool are_all_the_same_constant = true; // becomes false if we find a counterexample
+                bool is_current_constant_initialized = false;
+                long long current_constant;
+
+                if (!ins_in_R_to_ptr.empty()) {
+
+                    for (LLVMValueRef ins_to_check : ins_in_R_to_ptr) {
+                        LLVMValueRef associated_value = LLVMGetOperand(ins_to_check, 0);
+                        if (!LLVMIsAConstantInt(associated_value)){
+                            are_all_the_same_constant = false; // it is not a constant store instruction so it becomes false
+                            break;
+                        }
+                        if (!is_current_constant_initialized){
+                            current_constant = LLVMConstIntGetSExtValue(associated_value); // to start checking
+                            is_current_constant_initialized = true;
+                        } else {
+                            // they are compared as long long to avoid pointer comparison
+                            if (current_constant != LLVMConstIntGetSExtValue(associated_value)) {
+                                are_all_the_same_constant = false; // we found a counter example where the constant is not the same
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if(are_all_the_same_constant && is_current_constant_initialized) {
+                    // converting long long current_constant back to LLVMValueRef to apply LLVMReplaceAllUsesWith
+                    LLVMTypeRef Ty = LLVMTypeOf(ins); // to get the type of integer the load instruction refers to like i32
+                    LLVMValueRef current_constant_value = LLVMConstInt(Ty, (unsigned long long) current_constant, 1);
+                    LLVMReplaceAllUsesWith(ins, current_constant_value);
+                    change_has_ocurred = true;
+                    marked_load_instructions_to_delete.insert(ins); // since it was already substituted by current_constant_value
+                }
+            }
+        }
+        
+        for (LLVMValueRef load_to_delete : marked_load_instructions_to_delete) {
+            LLVMInstructionEraseFromParent(load_to_delete);
+        }
+    }
+    return change_has_ocurred;
+}
+
+void constant_propagation_and_constant_folding(LLVMValueRef func) {
+    bool there_is_a_change = true; // becomes true when we encounter one, this boolean is useful to detect if we have reached a fixed point
+    while (there_is_a_change) {
+        // constant propagation and then constant folding
+        bool change_of_type_1_occurred = taking_load_into_consideration(func);
+        bool change_of_type_2_occurred = false; // gets updated based on the following loop
+        for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(func); bb != NULL; bb = LLVMGetNextBasicBlock(bb)) {
+            if (run_constant_folding(bb)) { // run_constant_folding returns true if there has been a change and false otherwise
+                change_of_type_2_occurred = true;
+            }
+        }
+        if (!change_of_type_1_occurred && !change_of_type_2_occurred) { // no change happened then we are done
+            there_is_a_change = false;
+        }
+    }
+    run_dead_code_elimination(func); // in case we have dead code afterwards
 }
