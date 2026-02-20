@@ -4,6 +4,7 @@
 #include <vector>
 #include <unordered_set>
 #include <unordered_map>
+#include <llvm-c/IRReader.h>
 
 bool run_common_subexpression_elimination(LLVMBasicBlockRef bb);
 bool run_constant_folding(LLVMBasicBlockRef bb);
@@ -23,9 +24,51 @@ struct IN_and_OUT {
     std::unordered_set <LLVMValueRef> out_set;
 };
 
-int main(){
+// Processes input .ll file and outputs a file with the optimized version
+int main(int argc, char *argv[]){
+    // edge case where the user did not provide adequate input
+    if (argc != 2) {
+        fprintf(stderr, "%s", "You need to provide only the path to the .ll file to optimize");
+        exit(1);
+    }
     
+    // buffer to store the contents to be parsed
+    LLVMMemoryBufferRef buffer = NULL;
+    char *err_message = NULL;
+    // arg[1] is the name of the input file
+    LLVMBool did_fail = LLVMCreateMemoryBufferWithContentsOfFile(argv[1],
+                                                  &buffer,
+                                                  &err_message);
+    if (did_fail){
+        fprintf(stderr, "%s", err_message);
+        LLVMDisposeMessage(err_message);
+        if (buffer) {
+            LLVMDisposeMemoryBuffer(buffer);
+        }
+        exit(2);
+    }
+
+    
+    // parsing process starts
+    LLVMContextRef context_for_parser = LLVMContextCreate();
+    LLVMModuleRef module = NULL; //filled by function
+    LLVMBool parsing_failed = LLVMParseIRInContext(context_for_parser,
+                                         buffer,
+                                         &module,
+                                         &err_message);
+    if (parsing_failed){
+        fprintf(stderr, "%s", err_message);
+        LLVMDisposeMessage(err_message);
+        if (module) {
+            LLVMDisposeModule(module);
+        }
+        LLVMDisposeMemoryBuffer(buffer);
+        exit(2);
+    }
+    
+
 }
+
 // functions created for local tasks of optimization
 
 bool run_common_subexpression_elimination(LLVMBasicBlockRef bb){
