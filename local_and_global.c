@@ -109,7 +109,20 @@ int main(int argc, char *argv[]){
     snprintf(out_name, length_of_concat_string, "%s%s", in_name, suffix);
 
     // writing to the out file after getting the proper name for it
-    
+    LLVMBool writing_failed = LLVMPrintModuleToFile(module, out_name, &err_message);
+    if (writing_failed) {
+        fprintf(stderr, "%s\n", err_message);
+        LLVMDisposeMessage(err_message);
+        LLVMContextDispose(context_for_parser);
+        LLVMDisposeModule(module);
+        LLVMDisposeMemoryBuffer(buffer);
+        exit(6);
+    }
+
+    LLVMDisposeMessage(err_message);
+    LLVMContextDispose(context_for_parser);
+    LLVMDisposeModule(module);
+    LLVMDisposeMemoryBuffer(buffer);
     return 0;
 }
 
