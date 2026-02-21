@@ -5,6 +5,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <llvm-c/IRReader.h>
+#include <string.h>
 
 bool run_common_subexpression_elimination(LLVMBasicBlockRef bb);
 bool run_constant_folding(LLVMBasicBlockRef bb);
@@ -31,6 +32,26 @@ int main(int argc, char *argv[]){
         fprintf(stderr, "%s", "You need to provide only the path to the .ll file to optimize");
         exit(1);
     }
+
+    // to guarantee the user has provided the correct extension
+    char* input_file_with_extension = argv[1];
+    int length_of_input_file = strlen(input_file_with_extension);
+    char input_extension[4];
+    int i;
+    int j = 0; //tracks which char of the input_extension we are in
+    if (length_of_input_file < 3) {
+        fprintf(stderr, "%s\n", "You should provide a file with extension .ll therefore the length of the name should be more than 3.");
+        exit(2);
+    }
+    for(i = length_of_input_file - 3; i < length_of_input_file; i++){
+        input_extension[j] = input_file_with_extension[i];
+        j++;
+    }
+    input_extension[j] = '\0';
+    if (strcmp(input_extension, ".ll") != 0) { // if they are not equal incorrect input has been provided
+        fprintf(stderr, "%s\n", "You provided a file with the incorect extension. I t should be .ll");
+        exit(3);
+    }
     
     // buffer to store the contents to be parsed
     LLVMMemoryBufferRef buffer = NULL;
@@ -45,7 +66,7 @@ int main(int argc, char *argv[]){
         if (buffer) {
             LLVMDisposeMemoryBuffer(buffer);
         }
-        exit(2);
+        exit(4);
     }
 
     
@@ -62,14 +83,37 @@ int main(int argc, char *argv[]){
         if (module) {
             LLVMDisposeModule(module);
         }
+        LLVMContextDispose(context_for_parser);
         LLVMDisposeMemoryBuffer(buffer);
-        exit(2);
+        exit(5);
     }
-    
 
+    // optimization is applied per function
+    for (LLVMValueRef func = LLVMGetFirstFunction(module); func != NULL; func = LLVMGetNextFunction(func)) {
+        if (LLVMCountBasicBlocks(func) == 0) { // there is nothing to process so we continue
+            continue;
+        }
+        constant_propagation_and_constant_folding(func);
+    }
+    // after all the optimization has been performed we write to an output file
+    // first we create logic to create the name of the output file which would be the name of the input file with _optimized_output.ll at the end
+    char* suffix = "_optimized_output.ll";
+    char in_name[length_of_input_file];
+    int k;
+    for (k = 0; k < length_of_input_file-3; k++) { // so that the extension .ll is not counted
+        in_name[k] = input_file_with_extension[k];
+    }
+    in_name[k] = '\0';
+    int length_of_concat_string = strlen(in_name) + strlen(suffix) + 1;
+    char out_name [length_of_concat_string];
+    snprintf(out_name, length_of_concat_string, "%s%s", in_name, suffix);
+
+    // writing to the out file after getting the proper name for it
+    
+    return 0;
 }
 
-// functions created for local tasks of optimization
+// functions for local tasks of optimization
 
 bool run_common_subexpression_elimination(LLVMBasicBlockRef bb){
     bool replacement_has_happened = false;

@@ -1059,6 +1059,55 @@ LLVMValueRef LLVMGetFirstFunction(LLVMModuleRef M);
  * Obtain an iterator to the last Function in a Module.
  *
  * @see llvm::Module::end()
+// Processes input .ll file and outputs a file with the optimized version
+int main(int argc, char *argv[]){
+    // edge case where the user did not provide adequate input
+    if (argc != 2) {
+        fprintf(stderr, "%s", "You need to provide only the path to the .ll file to optimize");
+        exit(1);
+    }
+    
+    // buffer to store the contents to be parsed
+    LLVMMemoryBufferRef buffer = NULL;
+    char *err_message = NULL;
+    // arg[1] is the name of the input file
+    LLVMBool did_fail = LLVMCreateMemoryBufferWithContentsOfFile(argv[1],
+                                                  &buffer,
+                                                  &err_message);
+    if (did_fail){
+        fprintf(stderr, "%s", err_message);
+        LLVMDisposeMessage(err_message);
+        if (buffer) {
+            LLVMDisposeMemoryBuffer(buffer);
+        }
+        exit(2);
+    }
+
+    
+    // parsing process starts
+    LLVMContextRef context_for_parser = LLVMContextCreate();
+    LLVMModuleRef module = NULL; //filled by function
+    LLVMBool parsing_failed = LLVMParseIRInContext(context_for_parser,
+                                         buffer,
+                                         &module,
+                                         &err_message);
+    if (parsing_failed){
+        fprintf(stderr, "%s", err_message);
+        LLVMDisposeMessage(err_message);
+        if (module) {
+            LLVMDisposeModule(module);
+        }
+        LLVMContextDispose(context_for_parser);
+        LLVMDisposeMemoryBuffer(buffer);
+        exit(3);
+    }
+
+    // optimization is applied per function
+    for (LLVMValueRef func = LLVMGetFirstFunction(module); func != NULL; func = LLVMGetNextFunction(func)) {
+        constant_propagation_and_constant_folding(func);
+    }
+    return 0;
+}
  */
 LLVMValueRef LLVMGetLastFunction(LLVMModuleRef M);
 
