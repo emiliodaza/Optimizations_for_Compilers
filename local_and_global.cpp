@@ -93,36 +93,22 @@ int main(int argc, char *argv[]){
         if (LLVMCountBasicBlocks(func) == 0) { // there is nothing to process so we continue
             continue;
         }
+        // local optimizations
+        for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(func); bb != NULL; bb = LLVMGetNextBasicBlock(bb)) {
+            run_common_subexpression_elimination(bb);
+            run_constant_folding(bb);
+        }
+        run_dead_code_elimination(func);
+        // global optimization until fixed point
         constant_propagation_and_constant_folding(func);
     }
-    // after all the optimization has been performed we write to an output file
-    // first we create logic to create the name of the output file which would be the name of the input file with _optimized_output.ll at the end
-    char* suffix = "_optimized_output.ll";
-    char in_name[length_of_input_file];
-    int k;
-    for (k = 0; k < length_of_input_file-3; k++) { // so that the extension .ll is not counted
-        in_name[k] = input_file_with_extension[k];
-    }
-    in_name[k] = '\0';
-    int length_of_concat_string = strlen(in_name) + strlen(suffix) + 1;
-    char out_name [length_of_concat_string];
-    snprintf(out_name, length_of_concat_string, "%s%s", in_name, suffix);
 
-    // writing to the out file after getting the proper name for it
-    LLVMBool writing_failed = LLVMPrintModuleToFile(module, out_name, &err_message);
-    if (writing_failed) {
-        fprintf(stderr, "%s\n", err_message);
-        LLVMDisposeMessage(err_message);
-        LLVMContextDispose(context_for_parser);
-        LLVMDisposeModule(module);
-        LLVMDisposeMemoryBuffer(buffer);
-        exit(6);
-    }
-
-    LLVMDisposeMessage(err_message);
-    LLVMContextDispose(context_for_parser);
+    // after all the optimization has been performed we write the output to terminal
+    LLVMDumpModule(module);
+    // and then dispose
+    if (err_message != NULL) LLVMDisposeMessage(err_message);
     LLVMDisposeModule(module);
-    LLVMDisposeMemoryBuffer(buffer);
+    LLVMContextDispose(context_for_parser);
     return 0;
 }
 
@@ -206,22 +192,24 @@ bool run_constant_folding(LLVMBasicBlockRef bb){
             LLVMBool is_second_operand_cons = LLVMIsConstant(second_operand);
 
             LLVMValueRef folded_result = NULL;
-
+            long long result; // which is then converted into LLVMValueRef to store folded_result
             
             if (is_first_operand_cons && is_second_operand_cons){
+                long long first_operand_value = LLVMConstIntGetSExtValue(first_operand);
+                long long second_operand_value = LLVMConstIntGetSExtValue(second_operand);
                 if (type_of_ins == LLVMAdd){
-                    folded_result = LLVMConstAdd(first_operand, second_operand);
+                    result = first_operand_value + second_operand_value;
                 }
 
                 if (type_of_ins == LLVMSub){
-                    folded_result = LLVMConstSub(first_operand, second_operand);
+                    result = first_operand_value - second_operand_value;
                 }
 
                 if (type_of_ins == LLVMMul){
-                    folded_result = LLVMConstMul(first_operand, second_operand);
+                    result = first_operand_value * second_operand_value;
                 }
+                folded_result = LLVMConstInt(LLVMTypeOf(first_operand), result, 1);
             }
-
             if (folded_result != NULL){
                 LLVMReplaceAllUsesWith(instruction, folded_result);
                 LLVMInstructionEraseFromParent(instruction);
